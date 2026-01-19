@@ -1,0 +1,248 @@
+from google.cloud import bigquery
+from google.colab import auth
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+# КРОК 1: ПІДКЛЮЧЕННЯ ДО BIGQUERY
+
+# Аутентифікація
+auth.authenticate_user()
+
+# Створення 
+project_id = 'data-analytics-mate'
+client = bigquery.Client(project=project_id)
+print()
+
+# КРОК 2: SQL ЗАПИТ ДЛЯ СТВОРЕННЯ ДАТАСЕТУ
+query = """
+SELECT
+    s.date AS order_date,
+    s.ga_session_id AS session_id,
+    sp.continent,
+    sp.country,
+    sp.device,
+    sp.browser,
+    sp.mobile_model_name AS device_model,
+    sp.operating_system,
+    sp.language AS browser_language,
+    sp.name AS traffic_source,
+    sp.channel AS traffic_channel,
+    ac.id AS user_id,
+    ac.is_verified AS email_confirmed,
+    ac.is_unsubscribed AS subscribed_to_newsletter,
+    p.category AS product_category,
+    p.name AS product_name,
+    p.price
+    
+FROM `data-analytics-mate.DA.order` o
+JOIN `data-analytics-mate.DA.session` s ON o.ga_session_id = s.ga_session_id
+JOIN `data-analytics-mate.DA.session_params` sp ON s.ga_session_id = sp.ga_session_id
+JOIN `data-analytics-mate.DA.product` p ON o.item_id = p.item_id
+LEFT JOIN `data-analytics-mate.DA.account_session` ans ON s.ga_session_id = ans.ga_session_id
+LEFT JOIN `data-analytics-mate.DA.account` ac ON ans.account_id = ac.id
+
+WHERE s.date IS NOT NULL
+ORDER BY s.date DESC
+"""
+
+df = client.query(query).to_dataframe()
+print()
+
+# Збереження
+df.to_csv('ecommerce_full_data.csv', index=False)
+print()
+
+# КРОК 3: ОПИС ДАТАСЕТУ
+# Конвертація типів
+df['order_date'] = pd.to_datetime(df['order_date'])
+print(f"Загальна кількість рядків: {len(df):,}")
+
+# Числові колонки
+numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+print(f"\n ЧИСЛОВІ КОЛОНКИ ({len(numeric_cols)}):")
+for col in numeric_cols:
+    print(f"  - {col}")
+
+# Категоріальні колонки
+categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+print(f"\n КАТЕГОРІАЛЬНІ КОЛОНКИ ({len(categorical_cols)}):")
+for col in categorical_cols:
+    print(f"  - {col} (унікальних значень: {df[col].nunique()})")
+
+# Datetime колонки
+datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+print(f"\n DATETIME КОЛОНКИ ({len(datetime_cols)}):")
+for col in datetime_cols:
+    print(f"  - {col}")
+
+# Пропущені значення
+print(f"\n ПРОПУЩЕНІ ЗНАЧЕННЯ:")
+missing = df.isnull().sum()
+missing_pct = (missing / len(df) * 100).round(2)
+missing_df = pd.DataFrame({
+    'Колонка': missing.index,
+    'Кількість': missing.values,
+    'Відсоток (%)': missing_pct.values
+}).sort_values('Кількість', ascending=False)
+
+print(missing_df[missing_df['Кількість'] > 0].to_string(index=False))
+
+print(f"\n ПРИЧИНИ ПРОПУСКІВ:")
+
+# Описова статистика
+print(df['price'].describe())
+print()
+
+# КРОК 4: ГЕОГРАФІЧНИЙ АНАЛІЗ
+# Топ-3 континенти
+print("\n ТОП-3 КОНТИНЕНТИ:")
+continent_sales = df.groupby('continent')['price'].agg(['sum', 'count']).sort_values('sum', ascending=False)
+continent_sales.columns = ['Продажі ($)', 'Кількість замовлень']
+print(continent_sales.head(3))
+
+# Топ-5 країн
+print("\n ТОП-5 КРАЇН:")
+country_sales = df.groupby('country')['price'].agg(['sum', 'count']).sort_values('sum', ascending=False)
+country_sales.columns = ['Продажі ($)', 'Кількість замовлень']
+print(country_sales.head(5))
+
+# Візуалізація
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Континенти
+top_continents = continent_sales.head(3)
+axes[0].bar(top_continents.index, top_continents['Продажі ($)'], color='steelblue', edgecolor='black')
+axes[0].set_title('Топ-3 континенти за продажами')
+axes[0].set_ylabel('Продажі ($)')
+axes[0].grid(axis='y', alpha=0.3)
+
+# Країни
+top_countries = country_sales.head(5)
+axes[1].barh(top_countries.index, top_countries['Продажі ($)'], color='coral', edgecolor='black')
+axes[1].set_title('Топ-5 країн за продажами')
+axes[1].set_xlabel('Продажі ($)')
+axes[1].invert_yaxis()
+axes[1].grid(axis='x', alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('geography_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# КРОК 5: АНАЛІЗ КАТЕГОРІЙ ТОВАРІВ
+# Топ-10 категорій
+print("\n ТОП-10 КАТЕГОРІЙ ЗА ПРОДАЖАМИ:")
+category_sales = df.groupby('product_category')['price'].sum().sort_values(ascending=False).head(10)
+print(category_sales)
+
+# Топ-10 в найприбутковішій країні
+top_country = country_sales.index[0]
+print(f"\n ТОП-10 КАТЕГОРІЙ У {top_country.upper()}:")
+country_category = df[df['country'] == top_country].groupby('product_category')['price'].sum().sort_values(ascending=False).head(10)
+print(country_category)
+
+# Візуалізація
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+axes[0].barh(category_sales.index, category_sales.values, color='lightgreen', edgecolor='black')
+axes[0].set_title('Топ-10 категорій (загалом)')
+axes[0].set_xlabel('Продажі ($)')
+axes[0].invert_yaxis()
+
+axes[1].barh(country_category.index, country_category.values, color='lightcoral', edgecolor='black')
+axes[1].set_title(f'Топ-10 категорій у {top_country}')
+axes[1].set_xlabel('Продажі ($)')
+axes[1].invert_yaxis()
+
+plt.tight_layout()
+plt.savefig('category_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# КРОК 6: АНАЛІЗ ДЕВАЙСІВ ТА ТРАФІКУ
+# Девайси
+device_sales = df.groupby('device')['price'].sum()
+device_pct = (device_sales / device_sales.sum() * 100).round(2)
+
+print("\n ПРОДАЖІ ЗА ТИПОМ ПРИСТРОЮ:")
+for device, pct in device_pct.items():
+    print(f"  {device}: {pct}% (${device_sales[device]:,.2f})")
+
+# Трафік
+traffic_sales = df.groupby('traffic_channel')['price'].sum()
+traffic_pct = (traffic_sales / traffic_sales.sum() * 100).round(2)
+
+print("\n ПРОДАЖІ ЗА КАНАЛОМ ТРАФІКУ:")
+for channel, pct in traffic_pct.items():
+    print(f"  {channel}: {pct}% (${traffic_sales[channel]:,.2f})")
+
+# Візуалізація
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+axes[0].pie(device_sales.values, labels=device_sales.index, autopct='%1.1f%%', startangle=90)
+axes[0].set_title('Розподіл продажів за пристроями')
+
+axes[1].pie(traffic_sales.values, labels=traffic_sales.index, autopct='%1.1f%%', startangle=90)
+axes[1].set_title('Розподіл продажів за каналами')
+
+plt.tight_layout()
+plt.savefig('device_traffic_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# КРОК 7: АНАЛІЗ КОРИСТУВАЧІВ
+registered = df[df['user_id'].notna()]
+
+print(f"Загальна кількість замовлень: {len(df):,}")
+print(f"Замовлення від зареєстрованих: {len(registered):,} ({len(registered)/len(df)*100:.1f}%)")
+
+if len(registered) > 0:
+    verified_pct = (registered['email_confirmed'].sum() / len(registered) * 100)
+    unsubscribed_pct = (registered['subscribed_to_newsletter'].sum() / len(registered) * 100)
+    
+    print(f"\nПідтвердили email: {verified_pct:.1f}%")
+    print(f"Підписані на розсилку: {100 - unsubscribed_pct:.1f}%")
+    print(f"Відписалися: {unsubscribed_pct:.1f}%")
+    
+    # Топ країни за реєстраціями
+    print("\n ТОП-5 КРАЇН ЗА КІЛЬКІСТЮ ЗАРЕЄСТРОВАНИХ:")
+    reg_by_country = registered.groupby('country')['user_id'].nunique().sort_values(ascending=False).head(5)
+    print(reg_by_country)
+
+# КРОК 8: ДИНАМІКА ПРОДАЖІВ
+# Продажі за датами
+daily_sales = df.groupby('order_date')['price'].sum().reset_index()
+daily_sales.columns = ['date', 'sales']
+
+plt.figure(figsize=(14, 6))
+plt.plot(daily_sales['date'], daily_sales['sales'], linewidth=2, color='darkblue')
+plt.title('Динаміка продажів у часі')
+plt.xlabel('Дата')
+plt.ylabel('Продажі ($)')
+plt.show()
+
+# Сезонність
+df['month'] = df['order_date'].dt.month
+monthly_sales = df.groupby('month')['price'].mean()
+
+print("\n СЕРЕДНІ ПРОДАЖІ ЗА МІСЯЦЯМИ (сезонність):")
+print(monthly_sales)
+
+# КРОК 9: КОРЕЛЯЦІЙНИЙ АНАЛІЗ
+# Сесії vs Продажі
+daily_metrics = df.groupby('order_date').agg({
+    'session_id': 'nunique',
+    'price': 'sum'
+}).reset_index()
+daily_metrics.columns = ['date', 'sessions', 'sales']
+
+correlation = daily_metrics[['sessions', 'sales']].corr().iloc[0, 1]
+print(f"\n КОРЕЛЯЦІЯ МІЖ СЕСІЯМИ ТА ПРОДАЖАМИ: {correlation:.4f}")
+
+# Візуалізація
+plt.figure(figsize=(10, 6))
+plt.scatter(daily_metrics['sessions'], daily_metrics['sales'], alpha=0.5)
+plt.title(f'Взаємозв\'язок сесій та продажів (r={correlation:.3f})')
+plt.xlabel('Кількість сесій')
+plt.ylabel('Продажі ($)')
+plt.show()
+
